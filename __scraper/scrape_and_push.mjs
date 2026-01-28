@@ -1,7 +1,7 @@
 import { chromium } from 'playwright';
 const CFG = {
-  pushUrl: process.env.PUSH_URL || 'https://kapyushonrp.online/api/push.php',
-  pushKey: process.env.PUSH_KEY || 'CHANGE_ME',
+  pushUrl: process.env.PUSH_URL || 'https://xn--80atkdecg5dvc.online/api/push.php',
+  pushKey: process.env.PUSH_KEY || 'kRp_92384_x',
   serverId: '10809858',
   serverIp: '212.22.85.145',
   serverPort: 27015,
