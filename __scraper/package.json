@@ -1,0 +1,12 @@
+{
+  "name": "kapyushonrp-scraper",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "scripts": {
+    "scrape": "node scrape_and_push.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.55.0"
+  }
+}
