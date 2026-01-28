@@ -1,2 +1,2 @@
 <?php
-$PUSH_KEY='CHANGE_ME';
+$PUSH_KEY='kRp_92384_x';
