@@ -1,5 +1,4 @@
 import { chromium } from 'playwright';
-
 const CFG = {
   pushUrl: process.env.PUSH_URL || 'https://kapyushonrp.online/api/push.php',
   pushKey: process.env.PUSH_KEY || 'CHANGE_ME',
@@ -33,14 +32,22 @@ async function fetchJson(url, timeoutMs = 12000) {
 }
 
 async function push(payload) {
-  const u = CFG.pushUrl + '?key=' + encodeURIComponent(CFG.pushKey);
-  const r = await fetch(u, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  const txt = await r.text().catch(() => '');
-  if (!r.ok) throw new Error('push failed ' + r.status + ' ' + txt);
+  if (!CFG.pushUrl) throw new Error('PUSH_URL is not set');
+  const u = CFG.pushUrl + (CFG.pushUrl.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(CFG.pushKey);
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 20000);
+  try {
+    const r = await fetch(u, {
+      method: 'POST',
+      signal: ac.signal,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const txt = await r.text().catch(() => '');
+    if (!r.ok) throw new Error('push failed ' + r.status + ' ' + txt);
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 function findIndex(headers, patterns) {
