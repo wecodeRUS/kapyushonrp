@@ -19,16 +19,43 @@ async function fetchJson(url, timeoutMs = 12000) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const r = await fetch(url, { signal: ac.signal, headers: { 'accept': 'application/json,*/*' } });
+    const r = await fetch(url, {
+      signal: ac.signal,
+      headers: {
+        'accept': 'application/json, text/plain, */*'
+      }
+    });
     if (!r.ok) return null;
-    const ct = r.headers.get('content-type') || '';
-    if (!ct.includes('application/json')) return null;
-    return await r.json().catch(() => null);
+    const txt = await r.text().catch(() => '');
+    if (!txt) return null;
+    // Некоторые API отвечают JSON-ом как text/plain — не доверяем content-type.
+    return JSON.parse(txt);
   } catch (_) {
     return null;
   } finally {
     clearTimeout(t);
   }
+}
+
+function asList(j) {
+  if (!j || typeof j !== 'object') return [];
+  const r = (j.response && typeof j.response === 'object') ? j.response : j;
+  if (Array.isArray(r)) return r;
+  const keys = ['records', 'items', 'result', 'list', 'players', 'economy', 'bans', 'banList', 'staff', 'admins', 'users', 'data'];
+  for (const k of keys) {
+    const v = r[k];
+    if (Array.isArray(v)) return v;
+  }
+  return [];
+}
+
+async function tryJsonCandidates(urls, timeoutMs = 12000) {
+  for (const u of urls) {
+    const j = await fetchJson(u, timeoutMs);
+    if (!j) continue;
+    return { url: u, json: j };
+  }
+  return null;
 }
 
 async function push(payload) {
@@ -160,9 +187,36 @@ async function gmPlayersViaPage(context) {
 }
 
 async function scrapeBans(context) {
+  // 1) Пытаемся забрать напрямую JSON (быстрее и надежнее)
+  const base = new URL(CFG.deskBans).origin;
+  const apiTry = await tryJsonCandidates([
+    `${base}/api/bans?page=1`,
+    `${base}/api/bans?offset=0&limit=200`,
+    `${base}/api/banlist?page=1`,
+    `${base}/api/punishments?page=1`,
+    `${base}/api/v1/bans?page=1`,
+    `${base}/api/v2/bans?page=1`
+  ], 14000);
+  if (apiTry) {
+    const arr = asList(apiTry.json);
+    const bans = arr.map(b => {
+      const o = (b && typeof b === 'object') ? b : {};
+      return {
+        player: ns(o.player ?? o.nick ?? o.name ?? ''),
+        reason: ns(o.reason ?? o.cause ?? o.text ?? ''),
+        admin: ns(o.admin ?? o.banner ?? o.who ?? ''),
+        date: ns(o.date ?? o.banTime ?? o.created_at ?? o.createdAt ?? ''),
+        length: ns(o.length ?? o.banLength ?? o.time ?? o.duration ?? ''),
+        status: ns(o.status ?? '')
+      };
+    }).filter(b => b.player || b.reason || b.admin);
+    return { ok: true, bans, updated_at: now(), source: apiTry.url };
+  }
+
   const page = await context.newPage();
   await page.goto(CFG.deskBans, { waitUntil: 'networkidle', timeout: 60000 });
-  await page.waitForTimeout(1200);
+  await page.waitForSelector('table tbody tr', { timeout: 12000 }).catch(() => null);
+  await page.waitForTimeout(800);
 
   const table = await bestTable(page);
   await page.close();
@@ -172,7 +226,7 @@ async function scrapeBans(context) {
   const idxReason = findIndex(table.headers, [/за что/, /причин/, /reason/]);
   const idxAdmin = findIndex(table.headers, [/кто/, /админ/, /admin/]);
   const idxDate = findIndex(table.headers, [/дата/, /date/]);
-  const idxLen = findIndex(table.headers, [/срок/, /duration/, /length/]);
+  const idxLen = findIndex(table.headers, [/срок/, /продолж/, /duration/, /length/]);
   const idxStatus = findIndex(table.headers, [/статус/, /status/]);
 
   const bans = table.rows.map(r => ({
@@ -188,9 +242,39 @@ async function scrapeBans(context) {
 }
 
 async function scrapeEconomy(context) {
+  // 1) Пытаемся забрать напрямую JSON (быстрее и надежнее)
+  const base = new URL(CFG.deskEco).origin;
+  const apiTry = await tryJsonCandidates([
+    `${base}/api/economy?offset=0&limit=200`,
+    `${base}/api/economy?limit=200`,
+    `${base}/api/economy?page=1`,
+    `${base}/api/economy/top?limit=200`,
+    `${base}/api/rich?limit=200`,
+    `${base}/api/money?limit=200`,
+    `${base}/api/v1/economy?limit=200`,
+    `${base}/api/v2/economy?limit=200`
+  ], 14000);
+  if (apiTry) {
+    const arr = asList(apiTry.json);
+    const players = arr.map(p => {
+      const o = (p && typeof p === 'object') ? p : {};
+      const name = ns(o.nickname ?? o.nick ?? o.name ?? o.player ?? '');
+      const steamid = ns(o.steamid ?? o.steamId ?? o.steam ?? '');
+      const moneyRaw = String(o.money ?? o.balance ?? o.cash ?? o.wallet ?? o.bank ?? 0);
+      const money = Number(moneyRaw.replace(/[^\d.-]/g, '')) || 0;
+      const playtime = ns(o.playtime ?? o.played ?? o.time ?? o.hours ?? '');
+      return { nickname: name, name, steamid, playtime, time: playtime, money };
+    }).filter(p => p.nickname || p.steamid);
+
+    players.sort((a, b) => Number(b.money || 0) - Number(a.money || 0));
+    const top3 = players.slice(0, 3);
+    return { ok: true, players, top3, updated_at: now(), source: apiTry.url };
+  }
+
   const page = await context.newPage();
   await page.goto(CFG.deskEco, { waitUntil: 'networkidle', timeout: 60000 });
-  await page.waitForTimeout(1200);
+  await page.waitForSelector('table tbody tr', { timeout: 12000 }).catch(() => null);
+  await page.waitForTimeout(800);
 
   const table = await bestTable(page);
   await page.close();
@@ -284,7 +368,9 @@ async function scrapeStaff(context) {
       const playtime = ns(r[idxTime] ?? '');
       const last_seen = ns(r[idxLast] ?? '');
       const onlineRaw = idxOnline >= 0 ? ns(r[idxOnline] ?? '') : '';
-      const online = /онлайн|online|в сети|yes|true|1/i.test(onlineRaw);
+      // На оригинале часто нет отдельной колонки "Онлайн" — статус лежит в "последний заход" как "Сейчас в сети".
+      const probe = onlineRaw || last_seen;
+      const online = /(сейчас\s+в\s+сети|в\s+сети|онлайн|online|online\s+now|now\s+online|yes|true|\b1\b)/i.test(probe);
       return { name, role, playtime, last_seen, online };
     }).filter(x => x.name || x.role);
 
@@ -295,11 +381,13 @@ async function scrapeStaff(context) {
 }
 
 function parseRulesText(text) {
-  const lines = String(text || '').split(/\r?\n/).map(s => ns(s)).filter(Boolean);
+  const rawLines = String(text || '').split(/\r?\n/);
 
+  // Версия (дата изменения)
   let version = '';
-  for (const l of lines) {
-    const m = l.match(/Дата изменения правил\s*:?\s*([0-9]{2}\.[0-9]{2}\.[0-9]{4})/i);
+  for (const raw of rawLines) {
+    const t = String(raw || '').trim();
+    const m = t.match(/Дата изменения правил\s*:?\s*([0-9]{2}\.[0-9]{2}\.[0-9]{4})/i);
     if (m) { version = 'Дата изменения правил: ' + m[1]; break; }
   }
 
@@ -310,21 +398,31 @@ function parseRulesText(text) {
     'таблица'
   ];
 
-  const clean = lines.filter(l => {
-    const ll = lower(l);
-    if (stopPhrases.some(p => ll.includes(p))) return false;
-    return true;
-  });
+  const lines = rawLines
+    .map(raw => {
+      const s = String(raw ?? '');
+      const m = s.match(/^\s*/);
+      const indent = m ? m[0].length : 0;
+      const t = s.trim();
+      return { raw: s, t, indent };
+    })
+    .filter(x => x.t)
+    .filter(x => {
+      const ll = x.t.toLowerCase();
+      return !stopPhrases.some(p => ll.includes(p));
+    });
 
-  const isTop = (l) => {
-    const m = l.match(/^([0-9]{1,2})\.\s+(.+)$/);
+  const isSection = (x) => {
+    // Заголовки разделов: "1. ...", "2. ..." (обычно с небольшим отступом)
+    if (x.indent > 4) return false;
+    const m = x.t.match(/^([0-9]{1,2})\.\s+(.+)$/);
     if (!m) return false;
-    if (/^\d+\.\s+\d+\./.test(l)) return false;
+    if (/^\d+\.\s+\d+\./.test(x.t)) return false;
     return true;
   };
 
-  const topIdx = [];
-  for (let i = 0; i < clean.length; i++) if (isTop(clean[i])) topIdx.push(i);
+  const secIdx = [];
+  for (let i = 0; i < lines.length; i++) if (isSection(lines[i])) secIdx.push(i);
 
   const prune = (n) => {
     if (n.children && n.children.length) {
@@ -338,91 +436,90 @@ function parseRulesText(text) {
   };
 
   const sections = [];
-  const addSection = (title, slice) => {
+  const addSection = (titleLine, slice) => {
     const id = 'sec-' + (sections.length + 1);
-    const itemsRaw = [];
+    const m = titleLine.match(/^([0-9]{1,2})\./);
+    const secNo = m ? m[1] : '';
 
-    for (const line of slice) {
-      if (!line) continue;
-      if (/^Раздел\s*:/i.test(line)) continue;
-      if (/^Правила сервера/i.test(line)) continue;
+    // базовый отступ для пунктов (чтобы определить уровни вложенности)
+    const numbered = slice.filter(x => /^\d+\./.test(x.t));
+    const baseIndent = numbered.length ? Math.min(...numbered.map(x => x.indent)) : 0;
+    const step = 2; // на сайте отступы чаще всего кратны 2
 
-      let code = '';
-      let text = line;
-
-      const m1 = line.match(/^\d+\.\s+(\d+(?:\.\d+)+)\.?\s*(?:\|\s*)?(.+)$/);
-      const m2 = line.match(/^(\d+(?:\.\d+)+)\.?\s*(?:\|\s*)?(.+)$/);
-      const m3 = line.match(/^([0-9]{1,2})\.\s+(.+)$/);
-
-      if (m1) { code = m1[1]; text = m1[2]; }
-      else if (m2) { code = m2[1]; text = m2[2]; }
-      else if (m3 && !/^\d+\.\s+\d+\./.test(line)) { code = m3[1]; text = m3[2]; }
-
-      itemsRaw.push({ code: ns(code), text: ns(text) });
-    }
-
-    const keyMap = new Map();
-    const codeMap = new Map();
     const roots = [];
-    const childKeys = new Set();
+    const stack = []; // { level, node }
+    let nums = []; // текущая цепочка номеров внутри раздела
+    let lastNode = null;
 
-    const ensure = (it) => {
-      const key = it.code ? 'c:' + it.code : 'p:' + it.text;
-      if (keyMap.has(key)) return keyMap.get(key);
-      const node = { code: it.code || '', text: it.text || '', children: [] };
-      keyMap.set(key, node);
-      if (it.code) codeMap.set(it.code, node);
-      return node;
-    };
-
-    for (const it of itemsRaw) {
-      if (!it.text) continue;
-      const node = ensure(it);
-
-      if (!it.code) {
-        roots.push(node);
-        continue;
-      }
-
-      const parts = it.code.split('.').filter(Boolean);
-      const parentCode = parts.length > 1 ? parts.slice(0, -1).join('.') : '';
-      if (!parentCode) {
-        roots.push(node);
-        continue;
-      }
-
-      const parent = codeMap.get(parentCode);
+    const pushNode = (level, node) => {
+      while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
+      const parent = stack.length ? stack[stack.length - 1].node : null;
       if (parent) {
+        parent.children = parent.children || [];
         parent.children.push(node);
-        childKeys.add('c:' + it.code);
       } else {
         roots.push(node);
       }
+      stack.push({ level, node });
+      lastNode = node;
+    };
+
+    for (const x of slice) {
+      const t = x.t;
+      if (!t) continue;
+      if (/^Раздел\s*:/i.test(t)) continue;
+      if (/^Правила сервера/i.test(t)) continue;
+
+      // Заголовок внутри раздела (иногда попадается)
+      if (isSection(x)) continue;
+
+      // Абсолютный код вида 3.13 / 1.2.3
+      const abs = t.match(/^((?:\d+\.)+\d+)\.?\s*(.+)$/);
+      const rel = t.match(/^(\d+)\.\s*(.+)$/);
+
+      if (abs) {
+        const code = abs[1].replace(/\.$/, '');
+        const text = ns(abs[2]);
+        const node = prune({ code, text, children: [] });
+        // По коду пытаемся определить уровень (кол-во точек)
+        const level = Math.max(0, code.split('.').length - 2);
+        pushNode(level, node);
+        continue;
+      }
+
+      if (rel) {
+        const n = rel[1];
+        const text = ns(rel[2]);
+        const level = Math.max(0, Math.round((x.indent - baseIndent) / step));
+        nums = nums.slice(0, level);
+        nums[level] = n;
+        const code = secNo ? [secNo, ...nums].join('.') : nums.join('.');
+        const node = { code, text, children: [] };
+        pushNode(level, prune(node));
+        continue;
+      }
+
+      // продолжение предыдущего пункта
+      if (lastNode) {
+        lastNode.text = ns(lastNode.text + '\n' + t);
+      } else {
+        roots.push({ text: ns(t) });
+      }
     }
 
-    const uniqRoots = [];
-    const seen = new Set();
-    for (const r of roots) {
-      const key = (r.code ? 'c:' + r.code : 'p:' + r.text);
-      if (childKeys.has(key)) continue;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      uniqRoots.push(prune(r));
-    }
-
-    sections.push({ id, title, items: uniqRoots });
+    sections.push({ id, title: ns(titleLine), items: roots.map(prune) });
   };
 
-  if (topIdx.length) {
-    for (let i = 0; i < topIdx.length; i++) {
-      const a = topIdx[i];
-      const b = (i + 1 < topIdx.length) ? topIdx[i + 1] : clean.length;
-      const title = clean[a];
-      const slice = clean.slice(a + 1, b);
-      addSection(title, slice);
+  if (secIdx.length) {
+    for (let i = 0; i < secIdx.length; i++) {
+      const a = secIdx[i];
+      const b = (i + 1 < secIdx.length) ? secIdx[i + 1] : lines.length;
+      const titleLine = lines[a].t;
+      const slice = lines.slice(a + 1, b);
+      addSection(titleLine, slice);
     }
   } else {
-    addSection('Правила', clean);
+    addSection('Правила', lines);
   }
 
   return { ok: true, version: version || '-', sections, updated_at: now(), source: CFG.rulesUrl };
