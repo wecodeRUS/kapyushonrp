@@ -1,0 +1,2 @@
+<?php
+$PUSH_KEY='CHANGE_ME';
