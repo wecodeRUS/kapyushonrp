@@ -16,7 +16,7 @@ jobs:
           node-version: '20'
       - name: Install deps
         working-directory: __scraper
-        run: npm ci
+        run: npm install --no-audit --no-fund
       - name: Install Chromium
         working-directory: __scraper
         run: npx playwright install --with-deps chromium
