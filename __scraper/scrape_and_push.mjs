@@ -193,7 +193,7 @@ async function gmPlayersViaPage(context) {
   page.on('response', onResp);
 
   const target = CFG.gmPlayersPage || CFG.gmPage;
-  await page.goto(target, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => null);
+  await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => null);
   await page.waitForTimeout(1200);
 
   const mapPlayers = (arr) => arr.map(p => {
@@ -260,7 +260,13 @@ async function scrapeBans(context) {
   }
 
   const page = await context.newPage();
-  await page.goto(CFG.deskBans, { waitUntil: 'networkidle', timeout: 60000 });
+  try {
+    // На desk.famerp.ru часто висят фоновые запросы, поэтому networkidle ждать нельзя.
+    await page.goto(CFG.deskBans, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  } catch (e) {
+    // На GitHub Actions иногда бывают просадки/блоки. Делаем мягкий ретрай.
+    await page.goto(CFG.deskBans, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => null);
+  }
   await page.waitForSelector('table tbody tr', { timeout: 12000 }).catch(() => null);
   await page.waitForTimeout(800);
 
@@ -338,7 +344,7 @@ async function scrapeEconomy(context) {
   };
   page.on('response', onResp);
 
-  await page.goto(CFG.deskEco, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => null);
+  await page.goto(CFG.deskEco, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => null);
   await page.waitForTimeout(1500);
 
   const mapEconomy = (arr, source) => {
@@ -458,7 +464,7 @@ async function scrapeStaff(context) {
 
   for (const url of candidates) {
     const page = await context.newPage();
-    const ok = await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 }).then(() => true).catch(() => false);
+    const ok = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).then(() => true).catch(() => false);
     if (!ok) {
       await page.close();
       continue;
@@ -466,7 +472,7 @@ async function scrapeStaff(context) {
     await page.waitForTimeout(1200);
     let staffUrl = await discoverStaffUrl(page);
     if (staffUrl && staffUrl !== page.url()) {
-      await page.goto(staffUrl, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => null);
+      await page.goto(staffUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => null);
       await page.waitForTimeout(900);
     }
 
@@ -654,7 +660,7 @@ function parseRulesText(text) {
 async function scrapeRules(context) {
   const page = await context.newPage();
   // Правила берем с основного сайта famerp.ru (а не с desk), чтобы не ловить 404.
-  await page.goto(CFG.rulesUrl, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => null);
+  await page.goto(CFG.rulesUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => null);
   await page.waitForTimeout(1200);
 
   // Если на главной есть ссылка/кнопка "Правила" — переходим.
@@ -668,7 +674,7 @@ async function scrapeRules(context) {
     try {
       const u = new URL(href, page.url()).toString();
       if (u && u !== page.url()) {
-        await page.goto(u, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => null);
+        await page.goto(u, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => null);
         await page.waitForTimeout(1200);
       }
     } catch (_) {}
@@ -690,7 +696,11 @@ async function main() {
 
   let players = await gmPlayersViaApi();
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ locale: 'ru-RU' });
+  const context = await browser.newContext({
+    locale: 'ru-RU',
+    // Явный UA снижает шанс, что страница отдаст урезанный/пустой контент в CI
+    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  });
 
   if (!players) players = await gmPlayersViaPage(context);
 
